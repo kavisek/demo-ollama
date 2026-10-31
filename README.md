@@ -6,7 +6,7 @@ Run local LLMs with [Ollama](https://ollama.com), either in the terminal or thro
 
 - [Ollama](https://ollama.com/download), running on `http://localhost:11434`
 - [uv](https://docs.astral.sh/uv/) for the Python app (Python 3.12+)
-- Docker, only if you run Ollama in a container
+- [Docker](https://docs.docker.com/get-docker/), for running Ollama in a container (see [Ollama in Docker](#ollama-in-docker))
 
 ## Quick start
 
