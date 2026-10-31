@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Ollama Chat</title>
+  <style>
+    :root {
+      --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66;
+      --border: #e3e3de; --accent: #2f6fdf; --user: #e8effc; --error: #c0392b;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #161615; --panel: #1f1f1d; --text: #ecece8; --muted: #9a9a93;
+        --border: #33332f; --accent: #6b9cf0; --user: #22314d; --error: #ef6b5b;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; height: 100dvh; display: flex; flex-direction: column;
+      background: var(--bg); color: var(--text);
+      font: 15px/1.55 system-ui, -apple-system, sans-serif;
+    }
+    header {
+      display: flex; align-items: center; gap: 12px; padding: 12px 16px;
+      border-bottom: 1px solid var(--border); background: var(--panel);
+    }
+    header h1 { font-size: 16px; margin: 0; flex: 1; }
+    select, button, textarea {
+      font: inherit; color: inherit; background: var(--panel);
+      border: 1px solid var(--border); border-radius: 8px;
+    }
+    select { padding: 6px 8px; max-width: 50vw; }
+    button { padding: 8px 14px; cursor: pointer; }
+    button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    button:disabled { opacity: .5; cursor: default; }
+    main { flex: 1; overflow-y: auto; padding: 16px; }
+    .thread { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 12px; }
+    .msg { padding: 10px 14px; border-radius: 12px; white-space: pre-wrap; word-wrap: break-word; }
+    .msg.user { align-self: flex-end; background: var(--user); max-width: 85%; }
+    .msg.assistant { background: var(--panel); border: 1px solid var(--border); }
+    .msg.error { color: var(--error); border-color: var(--error); }
+    details { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+    details summary { cursor: pointer; }
+    .empty { color: var(--muted); text-align: center; margin-top: 20vh; }
+    form {
+      display: flex; gap: 8px; padding: 12px 16px; max-width: 792px; width: 100%;
+      margin: 0 auto;
+    }
+    textarea { flex: 1; resize: none; padding: 10px 12px; min-height: 44px; max-height: 200px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Ollama Chat</h1>
+    <select id="model" aria-label="Model"></select>
+    <button id="clear" type="button">New chat</button>
+  </header>
+  <main id="scroll">
+    <div class="thread" id="thread">
+      <p class="empty" id="empty">Send a message to start chatting.</p>
+    </div>
+  </main>
+  <form id="form">
+    <textarea id="input" rows="1" placeholder="Message… (Enter to send, Shift+Enter for newline)" autofocus></textarea>
+    <button class="primary" id="send" type="submit">Send</button>
+  </form>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const thread = $("thread"), input = $("input"), send = $("send"), modelSelect = $("model");
+    let messages = [];
+
+    async function loadModels() {
+      try {
+        const res = await fetch("/api/models");
+        if (!res.ok) throw new Error((await res.json()).detail);
+        const { default: def, models } = await res.json();
+        const names = models.includes(def) ? models : [def, ...models];
+        modelSelect.innerHTML = names.map((m) => `<option${m === def ? " selected" : ""}>${m}</option>`).join("");
+      } catch (err) {
+        modelSelect.innerHTML = "<option>unavailable</option>";
+        addBubble("assistant error").textContent = `Could not load models: ${err.message}`;
+      }
+    }
+
+    function addBubble(cls) {
+      $("empty")?.remove();
+      const el = document.createElement("div");
+      el.className = `msg ${cls}`;
+      thread.appendChild(el);
+      return el;
+    }
+
+    const scrollDown = () => { $("scroll").scrollTop = $("scroll").scrollHeight; };
+
+    async function sendMessage(text) {
+      messages.push({ role: "user", content: text });
+      addBubble("user").textContent = text;
+      const bubble = addBubble("assistant");
+      const body = document.createElement("div");
+      body.textContent = "…";
+      bubble.appendChild(body);
+      let thinkingEl = null, content = "", thinking = "";
+      send.disabled = true;
+      scrollDown();
+
+      try {
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: modelSelect.value, messages }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const chunk = JSON.parse(line);
+            if (chunk.error) throw new Error(chunk.error);
+            if (chunk.thinking) {
+              if (!thinkingEl) {
+                const details = document.createElement("details");
+                details.innerHTML = "<summary>Thinking</summary>";
+                thinkingEl = document.createElement("div");
+                details.appendChild(thinkingEl);
+                bubble.insertBefore(details, body);
+              }
+              thinking += chunk.thinking;
+              thinkingEl.textContent = thinking;
+            }
+            if (chunk.content) {
+              content += chunk.content;
+              body.textContent = content;
+            }
+            scrollDown();
+          }
+        }
+        messages.push({ role: "assistant", content });
+      } catch (err) {
+        bubble.classList.add("error");
+        body.textContent = `Error: ${err.message}`;
+        messages.pop();
+      } finally {
+        send.disabled = false;
+        input.focus();
+      }
+    }
+
+    $("form").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text || send.disabled) return;
+      input.value = "";
+      input.style.height = "";
+      sendMessage(text);
+    });
+
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("form").requestSubmit(); }
+    });
+    input.addEventListener("input", () => {
+      input.style.height = "";
+      input.style.height = `${input.scrollHeight}px`;
+    });
+
+    $("clear").addEventListener("click", () => {
+      messages = [];
+      thread.innerHTML = '<p class="empty" id="empty">Send a message to start chatting.</p>';
+      input.focus();
+    });
+
+    loadModels();
+  </script>
+</body>
+</html>
